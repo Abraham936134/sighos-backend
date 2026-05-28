@@ -1,4 +1,4 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import path from 'path';
@@ -280,7 +280,7 @@ app.delete('/api/specialties/:id', async (req, res, next) => {
     return res.json({ specialty: rows[0] });
   } catch (error) {
     if (error.code === '23503') {
-      return res.status(409).json({ error: 'No se puede eliminar la especialidad porque tiene servicios asociados. Desactívela en su lugar.' });
+      return res.status(409).json({ error: 'No se puede eliminar la especialidad porque tiene servicios asociados. DesactÃ­vela en su lugar.' });
     }
     next(error);
   }
@@ -523,7 +523,7 @@ app.delete('/api/patients/:id', async (req, res, next) => {
     return res.json({ success: true });
   } catch (error) {
     if (error.code === '23503') {
-      return res.status(409).json({ error: 'No se puede eliminar el paciente porque tiene registros asociados (ej. citas o historial médico).' });
+      return res.status(409).json({ error: 'No se puede eliminar el paciente porque tiene registros asociados (ej. citas o historial mÃ©dico).' });
     }
     next(error);
   }
@@ -1188,7 +1188,7 @@ app.put('/api/client-profile/:id/password', async (req, res, next) => {
     const { currentPassword, newPassword } = req.body || {};
 
     if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'Faltan campos de contraseña.' });
+      return res.status(400).json({ error: 'Faltan campos de contraseÃ±a.' });
     }
 
     const { rows } = await query(
@@ -1201,7 +1201,7 @@ app.put('/api/client-profile/:id/password', async (req, res, next) => {
     }
 
     if (rows[0].password !== currentPassword) {
-      return res.status(401).json({ error: 'La contraseña actual es incorrecta.' });
+      return res.status(401).json({ error: 'La contraseÃ±a actual es incorrecta.' });
     }
 
     await query(
@@ -1259,7 +1259,7 @@ app.put('/api/profile/:id/password', async (req, res, next) => {
     const { currentPassword, newPassword } = req.body || {};
 
     if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'Las contraseñas son obligatorias.' });
+      return res.status(400).json({ error: 'Las contraseÃ±as son obligatorias.' });
     }
 
     const { rows } = await query(
@@ -1272,7 +1272,7 @@ app.put('/api/profile/:id/password', async (req, res, next) => {
     }
 
     if (rows[0].password !== currentPassword) {
-      return res.status(400).json({ error: 'La contraseña actual es incorrecta.' });
+      return res.status(400).json({ error: 'La contraseÃ±a actual es incorrecta.' });
     }
 
     await query(
@@ -1288,7 +1288,7 @@ app.put('/api/profile/:id/password', async (req, res, next) => {
 
 app.get('/api/dashboard-stats', async (req, res, next) => {
   try {
-    // 1. Número de citas al mes
+    // 1. NÃºmero de citas al mes
     const citasMesRes = await query(`
       SELECT COUNT(*)::int as count 
       FROM citas 
@@ -2022,7 +2022,7 @@ app.post('/api/medical-histories', async (req, res, next) => {
     const { patientId, doctorId, weight, height, findings, diagnosis, treatment, medications, procedures } = req.body || {};
 
     if (!patientId || !doctorId) {
-      return res.status(400).json({ error: 'El paciente y el médico son obligatorios.' });
+      return res.status(400).json({ error: 'El paciente y el mÃ©dico son obligatorios.' });
     }
 
     const insertResult = await query(
@@ -2097,7 +2097,7 @@ app.put('/api/medical-histories/:id', async (req, res, next) => {
     const { patientId, doctorId, weight, height, findings, diagnosis, treatment, medications, procedures } = req.body || {};
 
     if (!patientId || !doctorId) {
-      return res.status(400).json({ error: 'El paciente y el médico son obligatorios.' });
+      return res.status(400).json({ error: 'El paciente y el mÃ©dico son obligatorios.' });
     }
 
     const updateResult = await query(
@@ -2225,7 +2225,7 @@ app.post('/api/work-schedules', async (req, res, next) => {
     const { specialtyId, month, year, morningWorkerId, afternoonWorkerId } = req.body || {};
 
     if (!specialtyId || !month || !year) {
-      return res.status(400).json({ error: 'La especialidad, el mes y el año son obligatorios.' });
+      return res.status(400).json({ error: 'La especialidad, el mes y el aÃ±o son obligatorios.' });
     }
 
     const mId = morningWorkerId || null;
@@ -2303,13 +2303,7 @@ app.delete('/api/work-schedules/:id', async (req, res, next) => {
 });
 
 // --- STATIC FILE SERVING (Production / Railway) ---
-const distPath = path.resolve(__dirname, '..', 'dist');
-app.use(express.static(distPath));
-
-// SPA fallback: any non-API route serves index.html
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(distPath, 'index.html'));
-});
+// STATIC FILE SERVING deshabilitado - solo backend en Render
 
 app.use((error, _req, res, _next) => {
   console.error('[api] Unhandled error:', error);
@@ -2328,3 +2322,4 @@ start().catch((error) => {
   console.error('[api] Failed to start server:', error);
   process.exit(1);
 });
+
