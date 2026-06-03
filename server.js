@@ -1,9 +1,12 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { query, testConnection } from './db.js';
+import multer from 'multer';
+import { createWorker } from 'tesseract.js';
+import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2302,6 +2305,161 @@ app.delete('/api/work-schedules/:id', async (req, res, next) => {
   }
 });
 
+// --- OCR / DNI ---
+const upload = multer({ storage: multer.memoryStorage() });
+
+function extraerDNI(texto) {
+  const patronesEtiquetados = [
+    /DNI[:\s]*(\d{8})/i,
+    /D\.N\.I[:\s]*(\d{8})/i,
+    /CUI[:\s]*(\d{8})/i,
+    /N[°º]?\s*(\d{8})/i,
+  ];
+  for (const patron of patronesEtiquetados) {
+    const match = texto.match(patron);
+    if (match) return match[1];
+  }
+  const regexNumeros = /\b\d{8}\b/g;
+  let match;
+  while ((match = regexNumeros.exec(texto)) !== null) {
+    if (!esFecha(match[0])) return match[0];
+  }
+  const ultimo = texto.match(/(\d{8})/);
+  return ultimo ? ultimo[1] : null;
+}
+
+function esFecha(str) {
+  const dia = parseInt(str.substring(0, 2), 10);
+  const mes = parseInt(str.substring(2, 4), 10);
+  const anio = parseInt(str.substring(4, 8), 10);
+  return dia >= 1 && dia <= 31 && mes >= 1 && mes <= 12 && anio >= 1900 && anio <= 2050;
+}
+
+function normalizarTexto(texto) {
+  if (!texto) return '';
+  return texto.toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function calcularLevenshtein(a, b) {
+  const matriz = [];
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  for (let i = 0; i <= a.length; i++) matriz[i] = [i];
+  for (let j = 0; j <= b.length; j++) matriz[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const costo = a[i-1] === b[j-1] ? 0 : 1;
+      matriz[i][j] = Math.min(
+        matriz[i-1][j] + 1,
+        matriz[i][j-1] + 1,
+        matriz[i-1][j-1] + costo
+      );
+    }
+  }
+  return matriz[a.length][b.length];
+}
+
+function compararNombres(nombreDB, textoDocumento) {
+  const dbNorm = normalizarTexto(nombreDB);
+  const docNorm = normalizarTexto(textoDocumento);
+  if (!dbNorm || !docNorm) return false;
+  const palabrasDoc = docNorm.split(/\s+/).filter(w => w.length > 0);
+  const omitir = ['DE','DEL','LA','LAS','LOS','Y','EL'];
+  const palabrasDB = dbNorm.split(' ').filter(w => w.length >= 3 && !omitir.includes(w));
+  const usar = palabrasDB.length > 0 ? palabrasDB : dbNorm.split(' ').filter(w => w.length > 0);
+  let coincidencias = 0;
+  for (const pDB of usar) {
+    let encontrado = docNorm.includes(pDB);
+    if (!encontrado) {
+      const maxDist = pDB.length <= 4 ? 1 : 2;
+      for (const pDoc of palabrasDoc) {
+        if (Math.abs(pDoc.length - pDB.length) <= 1 && calcularLevenshtein(pDB, pDoc) <= maxDist) {
+          encontrado = true;
+          break;
+        }
+      }
+    }
+    if (encontrado) coincidencias++;
+  }
+  return coincidencias >= Math.min(2, usar.length);
+}
+
+app.post('/api/ocr/procesar', upload.single('imagen'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No se envió ninguna imagen.' });
+  try {
+    const fileBuffer = req.file.buffer;
+    const rotaciones = [0, 90, 180, 270];
+    const candidatos = [];
+
+    const worker = await createWorker('spa', 1, {
+      langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+    });
+
+    for (const angulo of rotaciones) {
+      try {
+        const imageBuffer = await sharp(fileBuffer).rotate(angulo).jpeg().toBuffer();
+        const { data: { text } } = await worker.recognize(imageBuffer);
+        const cleanText = text || '';
+        const dni = extraerDNI(cleanText);
+        if (dni) {
+          const { rows } = await query(
+            'SELECT id_paciente, nombre_completo FROM pacientes WHERE dni = $1',
+            [dni]
+          );
+          const paciente = rows[0] || null;
+          candidatos.push({ angulo, texto: cleanText, dni, paciente, validoEnBD: !!paciente });
+        } else {
+          candidatos.push({ angulo, texto: cleanText, dni: null, paciente: null, validoEnBD: false });
+        }
+      } catch (_) {}
+    }
+
+    await worker.terminate();
+
+    const conPaciente = candidatos.filter(c => c.validoEnBD).sort((a, b) => b.texto.length - a.texto.length);
+    const conDni = candidatos.filter(c => c.dni).sort((a, b) => b.texto.length - a.texto.length);
+    candidatos.sort((a, b) => b.texto.length - a.texto.length);
+
+    const mejor = conPaciente[0] || conDni[0] || candidatos[0] || { texto: '', dni: null, paciente: null };
+
+    if (!mejor.dni) {
+      return res.status(422).json({ exito: false, motivo: 'No se encontró DNI válido en la imagen.' });
+    }
+    if (!mejor.paciente) {
+      return res.status(404).json({ exito: false, motivo: `Paciente con DNI ${mejor.dni} no registrado en SIGHOS.`, dni: mejor.dni });
+    }
+    if (!compararNombres(mejor.paciente.nombre_completo, mejor.texto)) {
+      return res.status(422).json({ exito: false, motivo: 'El nombre del documento no coincide con el paciente registrado.', dni: mejor.dni });
+    }
+
+    const maxIdRes = await query('SELECT COALESCE(MAX(id_historial), 0) + 1 AS next_id FROM historial_clinico');
+    const nextId = maxIdRes.rows[0].next_id;
+    const codigoDisplay = `HIS-${String(nextId).padStart(3, '0')}`;
+
+    const { rows: histRows } = await query(
+      `INSERT INTO historial_clinico (codigo_display, fecha, id_paciente, id_medico_encargado, hallazgos, diagnostico)
+       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5) RETURNING id_historial`,
+      [codigoDisplay, mejor.paciente.id_paciente, 1, mejor.texto.substring(0, 2000), 'Documento OCR procesado']
+    );
+
+    return res.json({
+      exito: true,
+      idHistorial: histRows[0].id_historial,
+      codigoDisplay,
+      paciente: mejor.paciente.nombre_completo,
+      dni: mejor.dni,
+    });
+
+  } catch (error) {
+    console.error('❌ Error OCR:', error.message);
+    return res.status(500).json({ error: 'Error interno procesando la imagen.' });
+  }
+});
 // --- STATIC FILE SERVING (Production / Railway) ---
 // STATIC FILE SERVING deshabilitado - solo backend en Render
 
