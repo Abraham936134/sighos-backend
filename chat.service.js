@@ -254,10 +254,12 @@ ESQUEMA DE LA BASE DE DATOS SIGHOS:
       try {
         if (name === 'consultarBaseDeDatos') {
           const { sqlQuery } = args;
+          console.log(`[bot-sql] Ejecutando query: ${sqlQuery}`);
           if (!sqlQuery.trim().toUpperCase().startsWith('SELECT')) {
             functionResult = { error: 'Solo se permiten consultas de lectura (SELECT).' };
           } else {
             const dbRes = await query(sqlQuery);
+            console.log(`[bot-sql] Retornó ${dbRes.rows ? dbRes.rows.length : 0} filas.`);
             functionResult = { rows: dbRes.rows };
           }
         } else if (name === 'consultarRENIEC') {
