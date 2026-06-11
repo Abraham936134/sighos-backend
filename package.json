@@ -1,17 +1,16 @@
 {
-  "name": "sighos-backend",
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "cors": "^2.8.6",
-    "dotenv": "^17.2.3",
-    "express": "^4.21.2",
-    "pg": "^8.20.0",
-    "tesseract.js": "^5.1.1",
-    "sharp": "^0.33.4",
-    "multer": "^1.4.5-lts.1"
-  }
+    "name": "sighos-backend",
+    "version": "1.0.0",
+    "type": "module",
+    "scripts": {
+        "start": "node server.js"
+    },
+    "dependencies": {
+        "@google/generative-ai": "^0.24.1",
+        "cors": "^2.8.6",
+        "dotenv": "^17.2.3",
+        "express": "^4.21.2",
+        "node-fetch": "^3.3.2",
+        "pg": "^8.20.0"
+    }
 }
