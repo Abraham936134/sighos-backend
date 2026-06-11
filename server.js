@@ -2,6 +2,7 @@ import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { query, testConnection } from './db.js';
 import { procesarPregunta } from './chat.service.js';
@@ -2488,9 +2489,14 @@ app.post('/api/chat', async (req, res, next) => {
 const distPath = path.resolve(__dirname, '..', 'dist');
 app.use(express.static(distPath));
 
-// SPA fallback: any non-API route serves index.html
+// SPA fallback: any non-API route serves index.html if it exists, otherwise a running JSON status
 app.get('*', (_req, res) => {
-  res.sendFile(path.join(distPath, 'index.html'));
+  const indexPath = path.join(distPath, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.json({ status: 'running', message: 'SIGHOS API is running.' });
+  }
 });
 
 app.use((error, _req, res, _next) => {
