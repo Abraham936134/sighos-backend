@@ -135,7 +135,7 @@ ESQUEMA DE LA BASE DE DATOS SIGHOS:
   * correo (character varying)
   * direccion (text)
   * salario (numeric)
-  * rol (character varying) - 'ADMINISTRADOR', 'MEDICO', 'RECEPCIONISTA'
+  * rol (character varying) - 'ADMINISTRADOR', 'EMPLEADO' (este rol corresponde a los médicos y trabajadores médicos en la base de datos), 'RECEPCIONISTA'
 
 - Tabla 'citas':
   * id_cita (integer)
@@ -156,7 +156,7 @@ ESQUEMA DE LA BASE DE DATOS SIGHOS:
         functionDeclarations: [
           {
             name: 'consultarBaseDeDatos',
-            description: 'Ejecuta una consulta SQL SELECT (y solo de lectura SELECT) sobre la base de datos de SIGHOS para obtener información de médicos, pacientes, citas, especialidades o servicios.',
+            description: 'Ejecuta una consulta SQL SELECT de lectura sobre cualquiera de las tablas de la base de datos de SIGHOS, incluyendo especialidades, servicios, pacientes, personal, citas, horarios_laborales e historial_clinico.',
             parameters: {
               type: 'OBJECT',
               properties: {
