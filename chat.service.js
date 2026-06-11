@@ -7,12 +7,25 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 export async function procesarPregunta(pregunta) {
   const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-  // Obtener esquema de la BD
-  const tablas = await query(`
-    SELECT table_name FROM information_schema.tables
+  // Obtener esquema de la BD con tablas y columnas
+  const columnas = await query(`
+    SELECT table_name, column_name 
+    FROM information_schema.columns 
     WHERE table_schema = 'public'
+    ORDER BY table_name, ordinal_position
   `);
-  const esquema = tablas.rows.map(r => r.table_name).join(', ');
+  
+  const mapaTablas = {};
+  columnas.rows.forEach(col => {
+    if (!mapaTablas[col.table_name]) {
+      mapaTablas[col.table_name] = [];
+    }
+    mapaTablas[col.table_name].push(col.column_name);
+  });
+  
+  const esquema = Object.entries(mapaTablas)
+    .map(([tabla, cols]) => `${tabla}(${cols.join(', ')})`)
+    .join('; ');
 
   // Detectar si pregunta por un DNI
   const dniMatch = pregunta.match(/\d{8}/);
