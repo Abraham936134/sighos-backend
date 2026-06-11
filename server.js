@@ -2474,11 +2474,11 @@ app.post('/api/ocr/procesar', upload.single('imagen'), async (req, res) => {
 
 app.post('/api/chat', async (req, res, next) => {
   try {
-    const { pregunta } = req.body;
+    const { pregunta, historial } = req.body;
     if (!pregunta) {
       return res.status(400).json({ error: 'Falta la pregunta.' });
     }
-    const respuesta = await procesarPregunta(pregunta);
+    const respuesta = await procesarPregunta(pregunta, historial);
     res.json({ respuesta });
   } catch (error) {
     next(error);
