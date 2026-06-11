@@ -5,6 +5,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { query, testConnection } from './db.js';
 import { procesarPregunta } from './chat.service.js';
+import multer from 'multer';
+import sharp from 'sharp';
+import { createWorker } from 'tesseract.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
