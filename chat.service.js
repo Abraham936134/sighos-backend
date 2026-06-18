@@ -1,86 +1,40 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { query } from './db.js';
-import { consultarDNI } from './reniec.service.js';
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createMcpServer } from "./mcp.server.js";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Función interna y segura para agendar citas con auto-registro si el paciente no existe
-async function ejecutarAgendarCita(dniPaciente, idServicio, fecha, hora) {
-  if (!/^\d{8}$/.test(dniPaciente)) {
-    throw new Error('El DNI debe tener exactamente 8 dígitos.');
-  }
-
-  // 1. Verificar servicio
-  const sRes = await query('SELECT nombre, precio FROM servicios WHERE id_servicio = $1', [idServicio]);
-  if (sRes.rows.length === 0) {
-    throw new Error(`El servicio con ID ${idServicio} no existe en SIGHOS.`);
-  }
-  const servicio = sRes.rows[0];
-
-  // 2. Buscar paciente
-  let pRes = await query('SELECT id_paciente, nombre_completo, codigo_display FROM pacientes WHERE dni = $1', [dniPaciente]);
-  let pacienteId;
-  let pacienteNombre;
-  let pacienteCodigo;
-  let autoRegistrado = false;
-
-  if (pRes.rows.length > 0) {
-    pacienteId = pRes.rows[0].id_paciente;
-    pacienteNombre = pRes.rows[0].nombre_completo;
-    pacienteCodigo = pRes.rows[0].codigo_display;
-  } else {
-    // Buscar en RENIEC para auto-registro
-    try {
-      const datosReniec = await consultarDNI(dniPaciente);
-      pacienteNombre = datosReniec.nombreCompleto;
-      autoRegistrado = true;
-
-      // Calcular correlativo PAC-XXX
-      const maxPacRes = await query("SELECT MAX(CAST(SUBSTRING(codigo_display, 5) AS INTEGER)) as max_num FROM pacientes WHERE codigo_display LIKE 'PAC-%'");
-      const maxNum = maxPacRes.rows[0].max_num || 0;
-      pacienteCodigo = 'PAC-' + String(maxNum + 1).padStart(3, '0');
-
-      // Insertar nuevo paciente
-      const newPacRes = await query(
-        `INSERT INTO pacientes (codigo_display, dni, nombre_completo, celular, correo, direccion, password, fecha_registro)
-         VALUES ($1, $2, $3, 'N/D', 'N/D', 'N/D', $4, CURRENT_TIMESTAMP)
-         RETURNING id_paciente`,
-        [pacienteCodigo, dniPaciente, pacienteNombre, dniPaciente]
-      );
-      pacienteId = newPacRes.rows[0].id_paciente;
-    } catch (reniecErr) {
-      throw new Error(`El paciente con DNI ${dniPaciente} no está registrado en el hospital y no pudo ser consultado en RENIEC: ${reniecErr.message}`);
-    }
-  }
-
-  // 3. Calcular correlativo de cita CIT-XXX
-  const maxCitRes = await query("SELECT MAX(CAST(SUBSTRING(codigo_display, 5) AS INTEGER)) as max_num FROM citas WHERE codigo_display LIKE 'CIT-%'");
-  const maxCitNum = maxCitRes.rows[0].max_num || 0;
-  const citaCodigo = 'CIT-' + String(maxCitNum + 1).padStart(3, '0');
-
-  // 4. Insertar cita
-  const timestampCita = `${fecha} ${hora}:00`;
-  await query(
-    `INSERT INTO citas (codigo_display, id_paciente, id_servicio, estado, fecha_cita, fecha_registro_sistema)
-     VALUES ($1, $2, $3, 'EN ESPERA', $4, CURRENT_TIMESTAMP)`,
-    [citaCodigo, pacienteId, idServicio, timestampCita]
-  );
-
-  return {
-    success: true,
-    message: 'Cita agendada exitosamente.',
-    codigoCita: citaCodigo,
-    codigoPaciente: pacienteCodigo,
-    nombrePaciente: pacienteNombre,
-    servicio: servicio.nombre,
-    precio: Number(servicio.precio),
-    fecha: fecha,
-    hora: hora,
-    autoRegistrado
-  };
-}
-
 export async function procesarPregunta(pregunta, historial = []) {
+  // 1. Instanciar transportes de MCP en memoria conectados entre sí (canal bidireccional)
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  // 2. Levantar una instancia aislada del Servidor MCP y conectarle su transporte
+  const mcpServer = createMcpServer();
+  await mcpServer.connect(serverTransport);
+
+  // 3. Inicializar el Cliente MCP y conectarle su transporte
+  const client = new Client(
+    { name: "sighos-mcp-client", version: "1.0.0" },
+    { capabilities: {} }
+  );
+  await client.connect(clientTransport);
+
+  // 4. Descubrimiento de herramientas mediante el protocolo estándar MCP
+  const toolsResponse = await client.listTools();
+  const mcpTools = toolsResponse.tools || [];
+
+  // Mapear dinámicamente las herramientas de MCP al formato que espera Gemini
+  const functionDeclarations = mcpTools.map(tool => ({
+    name: tool.name,
+    description: tool.description,
+    parameters: {
+      type: (tool.inputSchema.type || 'object').toUpperCase(),
+      properties: tool.inputSchema.properties,
+      required: tool.inputSchema.required
+    }
+  }));
+
   const fechaActual = new Date().toLocaleDateString('es-PE', { timeZone: 'America/Lima' }) + ' ' + new Date().toLocaleTimeString('es-PE', { timeZone: 'America/Lima' });
 
   const systemInstruction = `
@@ -148,69 +102,18 @@ ESQUEMA DE LA BASE DE DATOS SIGHOS:
   * fecha_registro_sistema (timestamp without time zone)
 `;
 
-  // Configuración del modelo con tools de Gemini
+  // Configuración del modelo con tools de Gemini mapeadas desde MCP
   const model = genAI.getGenerativeModel({
+    // Optimización de cuota: migrado de gemini-2.5-flash (límite de 20 req/día) 
+    // a gemini-flash-lite-latest (límite ampliado de 1,500 req/día y 15 RPM en capa gratuita)
     model: 'gemini-flash-lite-latest',
     systemInstruction,
+    // Arquitectura de Integración Segura: Se utiliza Function Calling nativo (tools) de Gemini
+    // alimentado por los esquemas obtenidos directamente de nuestro Servidor MCP en memoria.
     tools: [
       {
-        functionDeclarations: [
-          {
-            name: 'consultarBaseDeDatos',
-            description: 'Ejecuta una consulta SQL SELECT de lectura sobre cualquiera de las tablas de la base de datos de SIGHOS, incluyendo especialidades, servicios, pacientes, personal, citas, horarios_laborales e historial_clinico.',
-            parameters: {
-              type: 'OBJECT',
-              properties: {
-                sqlQuery: {
-                  type: 'STRING',
-                  description: 'Consulta SQL SELECT de lectura válida. NUNCA uses comandos de escritura.',
-                },
-              },
-              required: ['sqlQuery'],
-            },
-          },
-          {
-            name: 'consultarRENIEC',
-            description: 'Busca los nombres y apellidos de un ciudadano peruano en la RENIEC usando su DNI de 8 dígitos.',
-            parameters: {
-              type: 'OBJECT',
-              properties: {
-                dni: {
-                  type: 'STRING',
-                  description: 'El DNI de 8 dígitos del ciudadano.',
-                },
-              },
-              required: ['dni'],
-            },
-          },
-          {
-            name: 'agendarCita',
-            description: 'Agenda una cita médica en la base de datos de SIGHOS y registra al paciente automáticamente en pacientes si no está registrado.',
-            parameters: {
-              type: 'OBJECT',
-              properties: {
-                dniPaciente: {
-                  type: 'STRING',
-                  description: 'DNI de 8 dígitos del paciente.',
-                },
-                idServicio: {
-                  type: 'NUMBER',
-                  description: 'ID numérico del servicio o consulta médica.',
-                },
-                fecha: {
-                  type: 'STRING',
-                  description: 'Fecha de la cita en formato YYYY-MM-DD.',
-                },
-                hora: {
-                  type: 'STRING',
-                  description: 'Hora de la cita en formato HH:MM (24 horas).',
-                },
-              },
-              required: ['dniPaciente', 'idServicio', 'fecha', 'hora'],
-            },
-          },
-        ],
-      },
+        functionDeclarations: functionDeclarations
+      }
     ],
   });
 
@@ -240,7 +143,7 @@ ESQUEMA DE LA BASE DE DATOS SIGHOS:
   // Enviar el nuevo mensaje a la conversación
   let result = await chat.sendMessage(pregunta);
 
-  // Ciclo para procesar llamadas a funciones (Tools) repetitivas solicitadas por Gemini
+  // Ciclo para procesar llamadas a funciones (Tools) solicitadas por Gemini
   let calls = (typeof result.response.functionCalls === 'function')
     ? result.response.functionCalls()
     : result.response.functionCalls;
@@ -253,29 +156,23 @@ ESQUEMA DE LA BASE DE DATOS SIGHOS:
       let functionResult;
 
       try {
-        if (name === 'consultarBaseDeDatos') {
-          const { sqlQuery } = args;
-          console.log(`[bot-sql] Ejecutando query: ${sqlQuery}`);
-          if (!sqlQuery.trim().toUpperCase().startsWith('SELECT')) {
-            functionResult = { error: 'Solo se permiten consultas de lectura (SELECT).' };
-          } else {
-            const dbRes = await query(sqlQuery);
-            console.log(`[bot-sql] Retornó ${dbRes.rows ? dbRes.rows.length : 0} filas.`);
-            functionResult = { rows: dbRes.rows };
-          }
-        } else if (name === 'consultarRENIEC') {
-          const { dni } = args;
-          const datos = await consultarDNI(dni);
-          functionResult = datos;
-        } else if (name === 'agendarCita') {
-          const { dniPaciente, idServicio, fecha, hora } = args;
-          const resBooking = await ejecutarAgendarCita(dniPaciente, idServicio, fecha, hora);
-          functionResult = resBooking;
-        } else {
-          functionResult = { error: `Función desconocida: ${name}` };
+        console.log(`[mcp-client] Redirigiendo ejecución de herramienta "${name}" al Servidor MCP...`);
+        
+        // Petición formal a través del protocolo estándar MCP
+        const mcpResponse = await client.callTool({
+          name,
+          arguments: args
+        });
+
+        // Extraer el texto de la respuesta de MCP
+        const resultText = mcpResponse.content && mcpResponse.content[0] ? mcpResponse.content[0].text : '';
+        try {
+          functionResult = JSON.parse(resultText);
+        } catch {
+          functionResult = { result: resultText };
         }
       } catch (err) {
-        console.error(`❌ Error ejecutando Tool "${name}":`, err.message);
+        console.error(`❌ Error al invocar herramienta en Servidor MCP "${name}":`, err.message);
         functionResult = { error: err.message };
       }
 
@@ -287,13 +184,21 @@ ESQUEMA DE LA BASE DE DATOS SIGHOS:
       });
     }
 
-    // Enviar las respuestas de ejecución a Gemini para que continúe la respuesta
+    // Enviar las respuestas de ejecución de herramientas de vuelta a Gemini
     result = await chat.sendMessage(functionResponses);
 
-    // Volver a evaluar si hay llamadas de funciones subsecuentes
+    // Evaluar si Gemini requiere más llamadas a herramientas subsecuentes
     calls = (typeof result.response.functionCalls === 'function')
       ? result.response.functionCalls()
       : result.response.functionCalls;
+  }
+
+  // Cerrar la sesión del cliente y del servidor MCP de manera segura para liberar recursos
+  try {
+    await client.close();
+    await mcpServer.close();
+  } catch (err) {
+    console.error("Error al cerrar transportes MCP:", err.message);
   }
 
   // Retornar el texto final generado por Gemini
